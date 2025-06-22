@@ -60,6 +60,7 @@ export default function FileSharing() {
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:global.stun.twilio.com:3478' },
             { urls: 'stun:openrelay.metered.ca:80' },
             {
               urls: 'turn:openrelay.metered.ca:80',
@@ -122,16 +123,19 @@ export default function FileSharing() {
 
   // Handle incoming connection
   const handleConnection = (conn: any) => {
+    console.log('[App] Handling new connection from peer:', conn.peer);
     connectionRef.current = conn
     setConnectionStatus("connecting")
 
     conn.on("open", () => {
+      console.log('[App] Connection OPENED with peer:', conn.peer);
       setConnectionStatus("connected")
       setError(null)
       console.log("Connection established successfully")
     })
 
     conn.on("data", (data: any) => {
+      console.log('[App] Received DATA from peer:', conn.peer, 'of type:', data.type);
       if (data.type === "file-start") {
         // Prepare to receive file
         setTransferDirection("receiving")
@@ -155,13 +159,14 @@ export default function FileSharing() {
     })
 
     conn.on("close", () => {
+      console.log('[App] Connection CLOSED with peer:', conn.peer);
       setConnectionStatus("disconnected")
       connectionRef.current = null
       console.log("Connection closed")
     })
 
     conn.on("error", (err: any) => {
-      console.error("Connection error:", err)
+      console.error('[App] Connection ERROR with peer:', conn.peer, err);
       setError(`Connection error: ${err.message}`)
       setConnectionStatus("disconnected")
       connectionRef.current = null
