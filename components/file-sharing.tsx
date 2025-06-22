@@ -9,15 +9,18 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Badge } from "@/components/ui/badge"
 import { Separator } from "@/components/ui/separator"
 import { Progress } from "@/components/ui/progress"
-import { ArrowDownToLine, ArrowUpFromLine, Copy, LinkIcon, Loader2 } from "lucide-react"
+import { ArrowDownToLine, ArrowUpFromLine, Copy, LinkIcon, Loader2, RefreshCw } from "lucide-react"
 import { cn } from "@/lib/utils"
+import { useToast } from "@/components/ui/use-toast"
 
 export default function FileSharing() {
+  const { toast } = useToast()
   // Connection states
   const [myPeerId, setMyPeerId] = useState<string>("")
   const [remotePeerId, setRemotePeerId] = useState<string>("")
   const [connectionStatus, setConnectionStatus] = useState<"disconnected" | "connecting" | "connected">("disconnected")
   const [error, setError] = useState<string | null>(null)
+  const [isInitializing, setIsInitializing] = useState<boolean>(true)
 
   // File transfer states
   const [selectedFile, setSelectedFile] = useState<File | null>(null)
@@ -33,38 +36,78 @@ export default function FileSharing() {
   const connectionRef = useRef<any>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
 
+  // Initialize PeerJS with proper configuration
+  const initializePeer = async () => {
+    try {
+      setIsInitializing(true)
+      setError(null)
+      
+      // Clean up existing peer if any
+      if (peerRef.current) {
+        peerRef.current.destroy()
+      }
+
+      // Dynamically import PeerJS to avoid SSR issues
+      const { default: Peer } = await import("peerjs")
+
+      // We'll let PeerJS use its default cloud server, as the Heroku one is likely down.
+      // We are still providing the ICE server configuration for better NAT traversal.
+      const newPeer = new Peer({
+        // By removing the host, port, and secure options, PeerJS will use its default server.
+        
+        // Configure ICE servers for better NAT traversal
+        config: {
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            { urls: 'stun:stun3.l.google.com:19302' },
+            { urls: 'stun:stun4.l.google.com:19302' },
+          ]
+        },
+        
+        // Debug mode for troubleshooting
+        debug: 3,
+      })
+
+      newPeer.on("open", (id) => {
+        setMyPeerId(id)
+        setIsInitializing(false)
+        console.log("My peer ID is:", id)
+      })
+
+      newPeer.on("connection", (conn) => {
+        handleConnection(conn)
+      })
+
+      newPeer.on("error", (err) => {
+        console.error("Peer error:", err)
+        setIsInitializing(false)
+        
+        // Handle specific error types
+        if (err.type === 'peer-unavailable') {
+          setError("The peer you're trying to connect to is not available. Make sure they're online and have the correct ID.")
+        } else if (err.type === 'network') {
+          setError("Network error. Please check your internet connection and try again.")
+        } else if (err.type === 'server-error') {
+          setError("Server error. Please try again in a moment.")
+        } else {
+          setError(`Connection error: ${err.message}`)
+        }
+        setConnectionStatus("disconnected")
+      })
+
+      peerRef.current = newPeer
+    } catch (err) {
+      console.error("Failed to initialize PeerJS:", err)
+      setIsInitializing(false)
+      setError("Failed to initialize connection. Please check your internet connection and try again.")
+    }
+  }
+
   // Initialize PeerJS
   useEffect(() => {
-    const initPeer = async () => {
-      try {
-        // Dynamically import PeerJS to avoid SSR issues
-        const { default: Peer } = await import("peerjs")
-
-        const newPeer = new Peer()
-
-        newPeer.on("open", (id) => {
-          setMyPeerId(id)
-          console.log("My peer ID is:", id)
-        })
-
-        newPeer.on("connection", (conn) => {
-          handleConnection(conn)
-        })
-
-        newPeer.on("error", (err) => {
-          console.error("Peer error:", err)
-          setError(`Connection error: ${err.message}`)
-          setConnectionStatus("disconnected")
-        })
-
-        peerRef.current = newPeer
-      } catch (err) {
-        console.error("Failed to initialize PeerJS:", err)
-        setError("Failed to initialize connection. Please try again.")
-      }
-    }
-
-    initPeer()
+    initializePeer()
 
     // Clean up on unmount
     return () => {
@@ -82,6 +125,7 @@ export default function FileSharing() {
     conn.on("open", () => {
       setConnectionStatus("connected")
       setError(null)
+      console.log("Connection established successfully")
     })
 
     conn.on("data", (data: any) => {
@@ -110,6 +154,7 @@ export default function FileSharing() {
     conn.on("close", () => {
       setConnectionStatus("disconnected")
       connectionRef.current = null
+      console.log("Connection closed")
     })
 
     conn.on("error", (err: any) => {
@@ -128,13 +173,21 @@ export default function FileSharing() {
     setConnectionStatus("connecting")
 
     try {
-      const conn = peerRef.current.connect(remotePeerId)
+      const conn = peerRef.current.connect(remotePeerId, {
+        reliable: true,
+        serialization: 'json'
+      })
       handleConnection(conn)
     } catch (err: any) {
       console.error("Failed to connect:", err)
       setError(`Failed to connect: ${err.message}`)
       setConnectionStatus("disconnected")
     }
+  }
+
+  // Retry connection
+  const retryConnection = () => {
+    initializePeer()
   }
 
   // Handle file selection
@@ -198,7 +251,42 @@ export default function FileSharing() {
 
   // Copy peer ID to clipboard
   const copyPeerId = () => {
-    navigator.clipboard.writeText(myPeerId)
+    // The clipboard API may not be available in all browsers.
+    if (!navigator.clipboard) {
+      toast({
+        variant: "destructive",
+        title: "Copy Not Supported",
+        description: "Your browser does not support automatic copying.",
+      })
+      return
+    }
+
+    // It also requires a secure context (HTTPS or localhost).
+    if (!window.isSecureContext) {
+      toast({
+        variant: "destructive",
+        title: "Secure Connection Required",
+        description: "For security, copying is only available on HTTPS. Please copy the ID manually.",
+      })
+      return
+    }
+
+    navigator.clipboard.writeText(myPeerId).then(
+      () => {
+        toast({
+          title: "Peer ID Copied!",
+          description: "You can now paste it on the other device.",
+        })
+      },
+      (err) => {
+        console.error("Failed to copy Peer ID: ", err)
+        toast({
+          variant: "destructive",
+          title: "Copy Failed",
+          description: "Could not copy the ID. Please do it manually.",
+        })
+      },
+    )
   }
 
   // Reset received file
@@ -238,20 +326,27 @@ export default function FileSharing() {
                 )}
               </div>
             </div>
-            <Badge
-              variant={connectionStatus === "connected" ? "default" : "outline"}
-              className={cn(
-                "text-xs",
-                connectionStatus === "connected" && "bg-green-500",
-                connectionStatus === "connecting" && "bg-yellow-500",
+            <div className="flex items-center gap-2">
+              <Badge
+                variant={connectionStatus === "connected" ? "default" : "outline"}
+                className={cn(
+                  "text-xs",
+                  connectionStatus === "connected" && "bg-green-500",
+                  connectionStatus === "connecting" && "bg-yellow-500",
+                )}
+              >
+                {connectionStatus === "connected"
+                  ? "Connected"
+                  : connectionStatus === "connecting"
+                    ? "Connecting..."
+                    : "Disconnected"}
+              </Badge>
+              {!isInitializing && connectionStatus === "disconnected" && (
+                <Button variant="ghost" size="icon" className="h-6 w-6" onClick={retryConnection}>
+                  <RefreshCw className="h-3 w-3" />
+                </Button>
               )}
-            >
-              {connectionStatus === "connected"
-                ? "Connected"
-                : connectionStatus === "connecting"
-                  ? "Connecting..."
-                  : "Disconnected"}
-            </Badge>
+            </div>
           </div>
 
           <div className="flex gap-2">
@@ -349,11 +444,17 @@ export default function FileSharing() {
 
       <CardFooter className="flex justify-between text-xs text-muted-foreground">
         <p>WebRTC File Sharing</p>
-        {connectionStatus === "disconnected" && !myPeerId && (
+        {isInitializing && (
           <div className="flex items-center gap-1">
             <Loader2 className="h-3 w-3 animate-spin" />
             Initializing...
           </div>
+        )}
+        {!isInitializing && connectionStatus === "disconnected" && (
+          <p>Ready to connect</p>
+        )}
+        {connectionStatus === "connected" && (
+          <p className="text-green-600">Connected successfully</p>
         )}
       </CardFooter>
     </Card>
