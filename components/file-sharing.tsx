@@ -55,14 +55,17 @@ export default function FileSharing() {
       const newPeer = new Peer({
         // By removing the host, port, and secure options, PeerJS will use its default server.
         
-        // Configure ICE servers for better NAT traversal
+        // Configure ICE servers for better NAT traversal. This now includes
+        // a public TURN server to act as a relay for restrictive networks.
         config: {
           iceServers: [
             { urls: 'stun:stun.l.google.com:19302' },
-            { urls: 'stun:stun1.l.google.com:19302' },
-            { urls: 'stun:stun2.l.google.com:19302' },
-            { urls: 'stun:stun3.l.google.com:19302' },
-            { urls: 'stun:stun4.l.google.com:19302' },
+            { urls: 'stun:openrelay.metered.ca:80' },
+            {
+              urls: 'turn:openrelay.metered.ca:80',
+              username: 'openrelayproject',
+              credential: 'openrelayproject',
+            },
           ]
         },
         
